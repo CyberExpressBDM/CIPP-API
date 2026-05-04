@@ -34,9 +34,27 @@ function Start-CIPPOrchestrator {
         [switch]$CallerIsQueueTrigger
     )
 
-    # ─── CIPPNG runtime: push batch directly to OrchestratorService ───
+    # ─── CRAFT runtime: push batch directly to OrchestratorService ───
     if ($env:CIPPNG -eq 'true' -and $InputObject) {
         $OrchestratorName = $InputObject.OrchestratorName ?? 'UnnamedOrchestrator'
+
+        # QueueFunction pattern: call the function first to generate batch items
+        if (-not $InputObject.Batch -and $InputObject.QueueFunction) {
+            $QueueFuncName = "Push-$($InputObject.QueueFunction.FunctionName)"
+            Write-Information "CRAFT: Calling QueueFunction '$QueueFuncName' to build batch for '$OrchestratorName'"
+            $QueueItem = [PSCustomObject]@{}
+            if ($InputObject.QueueFunction.Parameters) {
+                $QueueItem = [PSCustomObject]$InputObject.QueueFunction.Parameters
+            }
+            $BatchResult = & $QueueFuncName -Item $QueueItem
+            $QueueBatch = @($BatchResult | Where-Object { $null -ne $_ })
+            if ($QueueBatch.Count -eq 0) {
+                Write-Information "CRAFT: QueueFunction '$QueueFuncName' returned 0 tasks for '$OrchestratorName' - skipping"
+                return "CRAFT-$OrchestratorName-NoTasks"
+            }
+            $InputObject | Add-Member -MemberType NoteProperty -Name 'Batch' -Value $QueueBatch -Force
+        }
+
         $BatchJson = ConvertTo-Json -InputObject @($InputObject.Batch) -Depth 10 -Compress
 
         $PostExecFunctionName = $null
@@ -48,15 +66,15 @@ function Start-CIPPOrchestrator {
             }
         }
 
-        Write-Information "CIPP-NG: Queuing orchestrator '$OrchestratorName' ($($InputObject.Batch.Count) tasks$(if ($PostExecFunctionName) { ", PostExec: $PostExecFunctionName" }))"
-        [CIPPASP.Services.OrchestratorBridge]::QueueOrchestration(
+        Write-Information "CRAFT: Queuing orchestrator '$OrchestratorName' ($($InputObject.Batch.Count) tasks$(if ($PostExecFunctionName) { ", PostExec: $PostExecFunctionName" }))"
+        [CRAFT.Services.OrchestratorBridge]::QueueOrchestration(
             $OrchestratorName,
             $BatchJson,
             4,
             $PostExecFunctionName,
             $PostExecParametersJson
         )
-        return "CIPPNG-$OrchestratorName"
+        return "CRAFT-$OrchestratorName"
     }
 
     $OrchestratorTable = Get-CippTable -TableName 'CippOrchestratorInput'
